@@ -33,7 +33,7 @@ A config is available for server owners to setup the plugin to their liking. Inc
 
 ## Configuration
 
-```json
+```
 Additional Tracking:
     Track Beancan Grenades -> false
     Track F1 Grenades -> false
