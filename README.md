@@ -4,7 +4,7 @@ Basic filtering is available to limit the number of events shown on-screen when 
 
 ## Upgrading from v1 to v2
 
-Raid Tracker v2 has been completely rebuilt from scratch and is **not** compatible with any configuration or data files from Raid Tracker v1.
+Raid Tracker v2 has been completely redesigned from scratch and is **not** compatible with any configuration or data files from Raid Tracker v1.
 
 **Before installing Raid Tracker v2 backup or delete all Raid Tracker v1 files and folders from `/oxide/config`, `/oxide/data`, `/oxide/lang` and `/oxide/plugins`.**
 
