@@ -90,6 +90,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
   "chatIconID": 76561199278762587,
   "deleteDataOnWipe": true,
   "daysBeforeDelete": 7.0,
+  "searchRadius": 50.0,
+  "drawDuration": 30.0,
   "ignoreBuildingGrades": {
     "Twigs": true,
     "Wood": false,
