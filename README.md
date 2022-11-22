@@ -26,14 +26,14 @@ There are 2 different types of discord webhook messages available to use. The de
 
 All raids logged are called a "Raid Event" which contains detailed info about the type of raid, where a raid happened and who raided.
 
-### There are 4 event types that can cause a raid event to be logged:
+**There are 4 event types that can cause a raid event to be logged:**
 
 1. Destroyed (entity_death_weapon, entity_death_ammo)
 2. Burnt (entity_death_fire)
 3. Attached To Entity (entity_collision)
 4. Hit Entity (entity_collision)
 
-#### Raid Event
+**Raid Event**
 
 ```json
 {
@@ -51,7 +51,7 @@ All raids logged are called a "Raid Event" which contains detailed info about th
 
 ## Admin Chat Commands
 
-### All commands require auth level 1 permission
+**All commands require auth level 1 permission**
 
 - `/x help` -- raid tracker command help
 - `/x <radius>` -- show all raid events within X radius (default 50m)
@@ -238,19 +238,19 @@ There are 4 tracker categories to log different types of raid events. Some weapo
 
 Certain ammo types (ammo.rocket, ammo.grenadelauncher) will appear in the `entity_death_weapon` category instead of `entity_death_ammo` due to how rust handles these types of projectiles. **The config is automatically generated with the correct items in each category, do not move them around thinking there is an error in the config.**
 
-#### 1. entity_collision
+**1. entity_collision**
 
 * Logs all deployed explosives that collide or attach to player owned entities. (Rocket, MLRS, C4, Satchel)
 
-#### 2. entity_death_ammo
+**2. entity_death_ammo**
 
 * Logs player entities that have been destroyed by certain ammo types. (Explosive ammo, Fire arrow, Incendiary ammo)
 
-#### 3. entity_death_fire
+**3. entity_death_fire**
 
 * Logs player entities that have been destroyed by fire or fireballs. (Fire arrow fireball, Shotgun fireball)
 
-#### 4. entity_death_weapon
+**4. entity_death_weapon**
 
 * Logs player entities that have been destroyed by certain weapons. (Guns, Melee weapons)
 
@@ -264,7 +264,7 @@ Certain ammo types (ammo.rocket, ammo.grenadelauncher) will appear in the `entit
 - `notifyAdmin` -- notify online admins of raid event
 - `notifyDiscord` -- notify discord webhook of raid event
 
-#### Optional properties
+#### Optional Properties
 
 - `alwaysLog` -- always log explosion, even if no entity is hit (`entity_collision` category only)
 - `shortArrow` -- draw short arrows to reduce clutter
@@ -313,7 +313,7 @@ Trackers and notifications can be enabled globally with the global wildcard item
 }
 ```
 
-## Ignoring entities
+## Ignoring Entities
 
 You can ignore entities from being logged or ignore them from being sent to discord. After ignoring any entities the plugin will need to be reloaded for the changes to take effect. 
 
@@ -372,7 +372,7 @@ A list of entities is automatically generated and saved to `/oxide/data/RaidTrac
 
 While debug mode is enabled detailed information will be printed to the server console along with additional on-screen visuals for admins. Debug mode can be enabled by setting config option `debug` to `true` and reloading the plugin or running command `rt.debug` from the server console.
 
-### All commands require auth level 1 permission
+**All commands require auth level 1 permission**
 
 - `rt.debug` -- enable debug mode (server only)
 - `/rt.weapon_colors <tracker category>` -- print weapon colors from tracker config to chat
