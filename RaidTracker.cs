@@ -957,7 +957,8 @@ namespace Oxide.Plugins
                         discordIcon = weaponCfg.discordIcon,
                         notifyConsole = globalWeaponCfg.notifyConsole,
                         notifyAdmin = globalWeaponCfg.notifyAdmin,
-                        notifyDiscord = globalWeaponCfg.notifyDiscord
+                        notifyDiscord = globalWeaponCfg.notifyDiscord,
+                        logToFile = globalWeaponCfg.logToFile
                     };
                 }
                 return weaponCfg;
