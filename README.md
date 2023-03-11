@@ -469,6 +469,9 @@ A list of entities is automatically generated and saved to `/oxide/data/RaidTrac
 **Wipe log**
 - `/oxide/logs/RaidTracker/raidtracker_wiped_raid_events-DATE.txt` -- Logs when an admin wipes raid events with the `/x wipe` command
 
+**Raid Event log**
+- `/oxide/logs/RaidTracker/raidtracker_raid_events-DATE.txt` -- Logs raid event if `logToFile` is enabled on tracker
+
 ## Debug mode
 
 While debug mode is enabled detailed information will be printed to the server console along with additional on-screen visuals for admins. Debug mode can be enabled by setting config option `debug` to `true` and reloading the plugin or running command `rt.debug` from the server console.
@@ -487,8 +490,14 @@ While dev mode is enabled the following settings are forced:
 - `ignoreSameOwner` -- forced: false
 - `ignoreTeamMember` -- forced: false
 - `ignoreClanMemberOrAlly` -- forced: false
+- `notificationCooldown.enabled` -- forced: false
 - `DecayEntityIgnoreList` -- nothing ignored, all prefabs enabled
-- if discord webhook is enabled all events will be sent to discord regardless of tracker config setting
+- weapon trackers:
+  - `enabled` -- forced: true
+  - `notifyConsole` -- forced: true
+  - `notifyAdmin` -- forced: true
+  - `notifyDiscord` -- forced: true
+  - `logToFile` -- forced: true
 
 ## Credits
 
