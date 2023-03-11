@@ -935,7 +935,8 @@ namespace Oxide.Plugins
                         discordIcon = weaponCfg.discordIcon,
                         notifyConsole = true,
                         notifyAdmin = true,
-                        notifyDiscord = true
+                        notifyDiscord = true,
+                        logToFile = true
                     };
                 }
 
