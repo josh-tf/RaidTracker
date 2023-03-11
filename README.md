@@ -8,10 +8,18 @@ Raid Tracker v2 has been completely redesigned from scratch and is **not** compa
 
 **Before installing Raid Tracker v2 backup or delete all Raid Tracker v1 files and folders from `/oxide/config`, `/oxide/data`, `/oxide/lang` and `/oxide/plugins`.**
 
+- `/oxide/config/RaidTracker.json`
+- `/oxide/data/RaidTracker.json`
+- `/oxide/data/RaidTracker/`
+- `/oxide/logs/RaidTracker/`
+- `/oxide/lang/en/RaidTracker.json`
+- `/oxide/plugins/RaidTracker.cs`
+
 ## Permissions
 
 - All commands require auth level 1 permission
 - `raidtracker.wipe` -- Allow admins to wipe raid events
+- `raidtracker.px` -- Allow players to view raid events
 
 ## Discord
 
@@ -19,19 +27,45 @@ Discord webhook alerts are supported without any additional plugins. Simply set 
 
 There are 2 different types of discord webhook messages available to use. The default is a detailed embed style message and the other is a simple text message style that can be enabled with the `discord.simpleMessage.enabled` config option.
 
-#### Embed style message
-![discord webhook alert](https://i.imgur.com/apTMXFH.png "Discord Webhook Alert")
+#### Embed message
+![discord webhook embed](https://i.imgur.com/apTMXFH.png "Discord Webhook Embed")
+
+#### Simple message
+```
+Clearshot[7656119] is raiding Clearshot[7656119] ~ C4 -> attached to Sheet Metal Door (door.hinged.metal) @ M23 (teleportpos -286.3,10.4,-1373.9)
+```
+
+#### Webhook message keys
+
+- "attackerName"
+- "attackerSteamID"
+- "attackerTeamName"
+- "victimName"
+- "victimSteamID"
+- "victimTeamName"
+- "weaponName"
+- "weaponShortname"
+- "weaponItemShortname"
+- "entityItemName"
+- "entityShortname"
+- "entityItemShortname"
+- "raidEventIndex"
+- "raidTrackerCategory"
+- "raidEventType"
+- "gridPos"
+- "teleportPos"
 
 ## Raid Events
 
 All raids logged are called a "Raid Event" which contains detailed info about the type of raid, where a raid happened and who raided.
 
-**There are 4 event types that can cause a raid event to be logged:**
+**There are 5 event types that can cause a raid event to be logged:**
 
 1. Destroyed (entity_death_weapon, entity_death_ammo)
 2. Burnt (entity_death_fire)
 3. Attached To Entity (entity_collision)
 4. Hit Entity (entity_collision)
+5. Always Logged Tracker (entity_collision)
 
 **Raid Event**
 
@@ -54,7 +88,7 @@ All raids logged are called a "Raid Event" which contains detailed info about th
 **All commands require auth level 1 permission**
 
 - `/x help` -- raid tracker command help
-- `/x <radius>` -- show all raid events within X radius (default 50m)
+- `/x <radius>` -- show all raid events within *\<radius\>* (default 50m)
 - `/x extra` -- toggle extra info mode
 - `/x wipe <radius>` -- wipe all raid events within *\<radius\>* ( perm: `raidtracker.wipe` )
 - `/x last` -- Re-run last command
@@ -66,6 +100,12 @@ All raids logged are called a "Raid Event" which contains detailed info about th
   - `/x player <steam id or partial name> <radius>` -- show all raid events within *\<radius\>* filtered by player
 - `/re <event id>` -- print info about a raid event, each event has an ID
 
+## Player Chat Commands
+
+**All player commands require `raidtracker.px` permission**
+
+- `/px <radius>` -- show all raid events within *\<radius\>* (default 50m)
+
 ## Configuration
 
 - `debug` -- debug mode
@@ -74,13 +114,22 @@ All raids logged are called a "Raid Event" which contains detailed info about th
 - `daysBeforeDelete` -- number of days to save a raid event before it is deleted
 - `searchRadius` -- default raid event search radius
 - `drawDuration` -- duration to display on-screen visuals in seconds
-- `ignoreBuildingGrades` -- ignore raids based on building grade `(TopTier = HQM)`
+- `ignoreBuildingGrades` -- ignore raids based on building grade (TopTier = HQM)
 - `ignoreSameOwner` -- ignore raids by the same owner
 - `ignoreTeamMember` -- ignore raids of team members
 - `ignoreClanMemberOrAlly` -- ignore raids of team members or allies
 - `enableNewTrackers` -- automatically enable new weapon config entries added to the tracker config list
 - `printToClientConsole` -- print chat messages to client F1 console
+- `playerViewExplosionsCommand` -- player view explosion command config options
+  - `drawAttackerName` -- draw attackers name
+  - `ignoreRaidEventsLessThanMinutes` -- ignore recent raid events to prevent abuse (players can abuse /px command to see where attacking player is during raid)
+- `notificationCooldown` -- cooldown for all notification types if same attacking player
+  - `enabled` -- enable global notification cooldown
+  - `cooldown` -- notification cooldown per attacking player in seconds
 - `discord` -- discord webhook config, trackers must have `notifyDiscord` enabled
+  - `webhookURL` -- discord webhook url
+  - `simpleMessage` - discord simple message options
+  - `embed` -- discord embed message options
 - `trackers` -- list of tracker weapon configs
 - `eventTypes` -- list of event type translations (used with discord and server console messages)
 
@@ -104,6 +153,14 @@ All raids logged are called a "Raid Event" which contains detailed info about th
   "ignoreClanMemberOrAlly": true,
   "enableNewTrackers": true,
   "printToClientConsole": true,
+  "playerViewExplosionsCommand": {
+    "drawAttackerName": false,
+    "ignoreRaidEventsLessThanMinutes": 30.0
+  },
+  "notificationCooldown": {
+    "enabled": false,
+    "cooldown": 300.0
+  },
   "discord": {
     "webhookURL": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
     "simpleMessage": {
@@ -141,7 +198,11 @@ All raids logged are called a "Raid Event" which contains detailed info about th
           "value": "{gridPos} - teleportpos {teleportPos}",
           "inline": false
         }
-      ]
+      ],
+      "footer": {
+        "text": "Raid Tracker {0} by Clearshot",
+        "icon_url": "https://i.imgur.com/DluJ5X5.png"
+      }
     }
   },
   "trackers": {
@@ -151,7 +212,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "name": "Enable all trackers in every category",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       }
     },
     "entity_collision": {
@@ -160,7 +222,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "name": "Enable all 'entity_collision' trackers",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       },
       "rocket_basic": {
         "enabled": true,
@@ -168,7 +231,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "hexColor": "#8800FF",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       }
     },
     "entity_death_ammo": {
@@ -177,7 +241,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "name": "Enable all 'entity_death_ammo' trackers",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       },
       "ammo.rifle.explosive": {
         "enabled": true,
@@ -185,7 +250,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "hexColor": "#808080",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       }
     },
     "entity_death_fire": {
@@ -194,7 +260,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "name": "Enable all 'entity_death_fire' trackers",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       },
       "fireball_small_arrow": {
         "enabled": true,
@@ -202,7 +269,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "hexColor": "#FF8C24",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       }
     },
     "entity_death_weapon": {
@@ -211,7 +279,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "name": "Enable all 'entity_death_weapon' trackers",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       },
       "rifle.ak": {
         "enabled": true,
@@ -219,7 +288,8 @@ All raids logged are called a "Raid Event" which contains detailed info about th
         "hexColor": "#C5D52D",
         "notifyConsole": false,
         "notifyAdmin": false,
-        "notifyDiscord": false
+        "notifyDiscord": false,
+        "logToFile": false
       }
     }
   },
@@ -263,6 +333,7 @@ Certain ammo types (ammo.rocket, ammo.grenadelauncher) will appear in the `entit
 - `notifyConsole` -- notify server console of raid event
 - `notifyAdmin` -- notify online admins of raid event
 - `notifyDiscord` -- notify discord webhook of raid event
+- `logToFile` -- log raid event to `/oxide/logs/RaidTracker/raidtracker_raid_events-DATE.txt`
 
 #### Optional Properties
 
@@ -277,7 +348,8 @@ Certain ammo types (ammo.rocket, ammo.grenadelauncher) will appear in the `entit
   "hexColor": "#808080",
   "notifyConsole": false,
   "notifyAdmin": false,
-  "notifyDiscord": false
+  "notifyDiscord": false,
+  "logToFile": false
 }
 ```
 
@@ -285,7 +357,7 @@ Certain ammo types (ammo.rocket, ammo.grenadelauncher) will appear in the `entit
 
 Trackers and notifications can be enabled globally with the global wildcard item `*` under the `_global` tracker category or under a specific tracker category.
 
-**Note:** When the global wildcard item `*` is enabled individual items that are enabled take priority over global settings.
+**Note: If the global wildcard tracker `*` is enabled individual trackers that are enabled take priority over global settings. When the plugin is first installed a default config is generated with certain trackers already enabled, if you would like to use the global config option first disable all trackers in the default config to avoid them overriding the global config settings!**
 
 **Globally enable all trackers and notifications in every category**
 ```json
@@ -295,7 +367,8 @@ Trackers and notifications can be enabled globally with the global wildcard item
     "name": "Enable all trackers in every category",
     "notifyConsole": true,
     "notifyAdmin": true,
-    "notifyDiscord": true
+    "notifyDiscord": true,
+    "logToFile": true
   }
 }
 ```
@@ -308,8 +381,22 @@ Trackers and notifications can be enabled globally with the global wildcard item
     "name": "Enable all 'entity_collision' trackers",
     "notifyConsole": true,
     "notifyAdmin": true,
-    "notifyDiscord": true
+    "notifyDiscord": true,
+    "logToFile": true
   }
+}
+```
+
+## Notification Cooldown
+
+All notification types from the same attacking player can be put on cooldown with the `notificationCooldown.enabled` config option. When enabled, the notification cooldown per attacking player is 5 minutes by default. The cooldown duration can be changed with the `notificationCooldown.cooldownSeconds` config option.
+
+**Note: Trackers with `logToFile` enabled will always be written to the log file regardless of notification cooldown settings.**
+
+```json
+"notificationCooldown": {
+  "enabled": true,
+  "cooldownSeconds": 300
 }
 ```
 
@@ -367,6 +454,20 @@ A list of entities is automatically generated and saved to `/oxide/data/RaidTrac
   "ViewEventsCommand.NotFound": "no raid events found!"
 }
 ```
+
+## Logs
+
+**Weapon config log**
+- `/oxide/logs/RaidTracker/raidtracker_weapon_config_log.txt` -- Logs when a new weapon config is added to the tracker config list
+
+**DecayEntity ignore list log**
+- `/oxide/logs/RaidTracker/raidtracker_decay_entity_log.txt` -- Logs when a new DecayEntity is added to the DecayEntityIgnoreList
+
+**px command error log**
+- `/oxide/logs/RaidTracker/raidtracker_px_error_log.txt` -- Error log if the `/px` command throws an exception
+
+**Wipe log**
+- `/oxide/logs/RaidTracker/raidtracker_wiped_raid_events-DATE.txt` -- Logs when an admin wipes raid events with the `/x wipe` command
 
 ## Debug mode
 

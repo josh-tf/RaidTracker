@@ -12,7 +12,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Raid Tracker", "Clearshot", "2.0.0")]
+    [Info("Raid Tracker", "Clearshot", "2.1.0")]
     [Description("Track raids by explosives, weapons, and ammo with detailed on-screen visuals")]
     class RaidTracker : CovalencePlugin
     {
@@ -21,6 +21,7 @@ namespace Oxide.Plugins
         private float _debugDrawDuration = 15f;
         private static RaidTracker _instance;
         private PluginConfig _config;
+        private bool _isConfigValid = true;
         private StringBuilder _sb = new StringBuilder();
         private Game.Rust.Libraries.Player _rustPlayer = Interface.Oxide.GetLibrary<Game.Rust.Libraries.Player>("Player");
 
@@ -32,6 +33,7 @@ namespace Oxide.Plugins
         private Dictionary<string, DecayEntityIgnoreOptions> _decayEntityIgnoreList = new Dictionary<string, DecayEntityIgnoreOptions>();
         private Dictionary<string, string> _prefabToItem = new Dictionary<string, string>();
         private Dictionary<string, string> _buildingBlockPrettyNames = new Dictionary<string, string>();
+        private Dictionary<ulong, float> _notificationCooldown = new Dictionary<ulong, float>();
 
         private bool _wipeData;
         private List<RaidEvent> _raidEventLog = new List<RaidEvent>();
@@ -69,13 +71,14 @@ namespace Oxide.Plugins
         Plugin AbandonedBases, Clans, RaidableBases;
 
         private const string PERM_WIPE = "raidtracker.wipe";
+        private const string PERM_PX = "raidtracker.px";
 
         #region Hooks
 
         private void Init()
         {
-            _instance = this;
             permission.RegisterPermission(PERM_WIPE, this);
+            permission.RegisterPermission(PERM_PX, this);
 
             Unsubscribe(nameof(OnPlayerDisconnected));
             Unsubscribe(nameof(OnMlrsFired));
@@ -202,11 +205,13 @@ namespace Oxide.Plugins
                     if (!_decayEntityIgnoreList.ContainsKey(ent.PrefabName))
                     {
                         var item = ItemManager.FindItemDefinition(itemShortname);
+                        var itemName = item != null ? $"{item?.displayName?.english ?? "Unknown"} ({itemShortname})" : "";
                         _decayEntityIgnoreList[ent.PrefabName] = new DecayEntityIgnoreOptions {
-                            name = item != null ? $"{item?.displayName?.english ?? "Unknown"} ({itemShortname})" : "",
+                            name = itemName,
                             ignore = false,
                             ignoreDiscord = false
                         };
+                        LogToSingleFile("decay_entity_log", $"added {ent.PrefabName} {(!string.IsNullOrEmpty(itemName) ? $"[ITEM: {itemName}]" : "")}");
                         saveList = true;
                     }
 
@@ -254,7 +259,8 @@ namespace Oxide.Plugins
                 }
             }
 
-            if (saveCfg)
+            // Don't overwrite the config if invalid since the user will lose their config!
+            if (_isConfigValid && saveCfg)
                 SaveConfig();
 
             Subscribe(nameof(OnPlayerDisconnected));
@@ -286,6 +292,7 @@ namespace Oxide.Plugins
         {
             _verboseMode.Remove(pl.userID);
             _lastViewCommand.Remove(pl.userID);
+            _notificationCooldown.Remove(pl.userID);
         }
 
         private void OnMlrsFired(MLRS mlrs, BasePlayer driver)
@@ -436,9 +443,9 @@ namespace Oxide.Plugins
             if (!weaponEnabled && !projectileEnabled) return;
 
             string weapon;
-            if (weaponEnabled && projectileItemShortname != null)
+            if (weaponEnabled && projectileItemShortname != null && weaponItemShortname != projectileItemShortname)
                 weapon = $"{weaponItemShortname}[{weaponTrackerCategory}];{projectileItemShortname}[{projectileTrackerCategory}]";
-            else if (projectileEnabled && weaponItemShortname != null)
+            else if (projectileEnabled && weaponItemShortname != null && weaponItemShortname != projectileItemShortname)
                 weapon = $"{projectileItemShortname}[{projectileTrackerCategory}];{weaponItemShortname}[{weaponTrackerCategory}]";
             else if (projectileEnabled)
                 weapon = $"{projectileItemShortname}[{projectileTrackerCategory}]";
@@ -501,7 +508,6 @@ namespace Oxide.Plugins
             Vector3 pos = pl.transform.position;
                     pos.y += pl.GetHeight() - .5f;
 
-            bool isDefault = false;
             float tempRadius;
             IEnumerable<IGrouping<RaidFilter, RaidEvent>> groupedRaidsNearMe;
             switch (filterType)
@@ -558,7 +564,7 @@ namespace Oxide.Plugins
                     var playerPos = pl.transform.position;
                     var gridPos = PhoneController.PositionToGridCoord(playerPos);
                     var filename = $"{Name}\\WipedRaidEvents\\{string.Format("{0:yyyy-MM-dd}", DateTime.Now)}\\{pl.userID}\\{gridPos}_{string.Format("{0:h-mm-tt}", DateTime.Now)}";
-                    LogToFile("wiped_raid_events", $"{pl.displayName}[{pl.userID}] wiped {raidEventsToWipe.Count} raid events in {gridPos} ({FormatPosition(playerPos)}) at {DateTime.Now}", this);
+                    LogToFile("wiped_raid_events", $"{pl.displayName}[{pl.userID}] wiped {raidEventsToWipe.Count} raid events in {gridPos} ({FormatPosition(playerPos)})", this);
                     Interface.Oxide.DataFileSystem.WriteObject(filename, raidEventsToWipe);
                     SaveRaidEventLog();
 
@@ -624,8 +630,6 @@ namespace Oxide.Plugins
                         .GroupBy(x => new RaidFilter { filter = $"{x.attackerName}[{x.attackerSteamID}]", filterType = filterType });
                     break;
                 default:
-                    isDefault = true;
-
                     if (args.Length > 0 && float.TryParse(args[0], out tempRadius))
                         radius = tempRadius;
 
@@ -634,105 +638,56 @@ namespace Oxide.Plugins
                     break;
             }
 
-            int raidCount = groupedRaidsNearMe.Sum(x => x.Count());
-            _sb.Clear();
-            _sb.AppendLine(string.Format(lang.GetMessage("ViewEventsCommand.Header", this, pl.UserIDString), raidCount, radius));
+            DrawRaidEvents(pl, groupedRaidsNearMe, filterType, filter, radius);
+            _lastViewCommand[pl.userID] = args;
+        }
 
-            if (!isDefault && !string.IsNullOrEmpty(filterType))
-                _sb.AppendLine(string.Format(lang.GetMessage("ViewEventsCommand.Filter", this, pl.UserIDString), filterType, filter));
+        [Command("px")]
+        private void PlayerViewExplosionsCommand(IPlayer player, string command, string[] args)
+        {
+            BasePlayer pl = player.Object as BasePlayer;
+            if (pl == null) return;
 
-            var groupCloseNames = new Dictionary<ulong, List<Vector3>>();
-            foreach (var grouping in groupedRaidsNearMe)
+            bool isAdmin = player.IsAdmin;
+            if (!isAdmin && !permission.UserHasPermission(pl.UserIDString, PERM_PX))
             {
-                var groupingColor = GetRandomColor();
-                var groupingColorHex = GetHexColor(groupingColor);
-                foreach (RaidEvent raidEvent in grouping)
-                {
-                    if (raidEvent.attackerTeamID > 0 && !_teamColors.ContainsKey(raidEvent.attackerTeamID))
-                    {
-                        _teamColors[raidEvent.attackerTeamID] = _uniqueColors[_currentTeamColorIdx];
-                        _currentTeamColorIdx = _currentTeamColorIdx < _uniqueColors.Count() ? _currentTeamColorIdx : -1;
-                        _currentTeamColorIdx++;
-                    }
-
-                    var teamColor = raidEvent.attackerTeamID > 0 ? _teamColors[raidEvent.attackerTeamID] : GetRandomColor();
-                    var teamColorHex = GetHexColor(teamColor);
-                    var weaponCfg = FindWeaponConfig(raidEvent.GetTrackerCategory(), raidEvent.GetPrimaryWeaponShortname());
-                    var weaponColor = weaponCfg.GetWeaponColor();
-
-                    if (filterType == "weapon")
-                    {
-                        groupingColor = weaponColor;
-                        groupingColorHex = GetHexColor(groupingColor);
-                    }
-                    else if (filterType == "team")
-                    {
-                        groupingColor = teamColor;
-                        groupingColorHex = GetHexColor(groupingColor);
-                    }
-
-                    string startText, endText;
-                    var startPos = raidEvent.startPos;
-                    var endPos = raidEvent.endPos;
-
-                    if (weaponCfg.shortArrow)
-                    {
-                        startPos = raidEvent.endPos + new Vector3(0, .2f, 0);
-                        endPos = raidEvent.endPos;
-                    }
-
-                    string attackerTeam = raidEvent.attackerTeamID > 0 ? string.Format(lang.GetMessage("ViewEventsCommand.Team", this, pl.UserIDString), teamColorHex, raidEvent.attackerTeamID) : "";
-                    if (verbose)
-                    {
-                        startText = string.Format(lang.GetMessage("ViewEventsCommand.StartTextExtra", this, pl.UserIDString), raidEvent.attackerName, raidEvent.attackerSteamID, attackerTeam);
-                        endText = string.Format(lang.GetMessage("ViewEventsCommand.EndTextExtra", this, pl.UserIDString), groupingColorHex, raidEvent.GetIndex(), raidEvent.GetWeaponName(), raidEvent.hitEntity.Replace(raidEvent.GetEventType(), raidEvent.GetPrettyEventType()));
-                    }
-                    else
-                    {
-                        startText = string.Format(lang.GetMessage("ViewEventsCommand.StartText", this, pl.UserIDString), raidEvent.attackerName, attackerTeam);
-                        endText = string.Format(lang.GetMessage("ViewEventsCommand.EndText", this, pl.UserIDString), groupingColorHex, raidEvent.GetWeaponName());
-                    }
-
-                    if (raidEvent.hitEntity.Contains("EVENT.ATTACHED"))
-                        Box(pl, endPos, .05f, groupingColor, _config.drawDuration);
-                    else if (raidEvent.hitEntity.Contains("EVENT.HIT"))
-                        Sphere(pl, endPos, .05f, groupingColor, _config.drawDuration);
-
-                    if (!groupCloseNames.ContainsKey(raidEvent.attackerSteamID))
-                        groupCloseNames[raidEvent.attackerSteamID] = new List<Vector3>();
-
-                    if (!groupCloseNames[raidEvent.attackerSteamID].Any(x => Vector3.Distance(x, startPos) < .1f))
-                    {
-                        groupCloseNames[raidEvent.attackerSteamID].Add(startPos);
-                        Text(pl, startPos, startText, groupingColor, _config.drawDuration);
-                    }
-
-                    Arrow(pl, startPos, endPos, .05f, groupingColor, _config.drawDuration);
-                    Text(pl, endPos + new Vector3(0, .05f, 0), endText, weaponColor, _config.drawDuration);
-                }
-                _sb.AppendLine(string.Format(lang.GetMessage("ViewEventsCommand.GroupingCount", this, pl.UserIDString), groupingColorHex, grouping.Count(), grouping.Key.filterType, grouping.Key.filter));
-
-                var weaponCounts = grouping
-                    .GroupBy(x => new { weapon = x.GetPrimaryWeaponShortname(), trackerCategory = x.GetTrackerCategory() })
-                    .Select(x => new { data = x.Key, count = x.Count() });
-
-                _sb.Append("<indent=6>");
-                foreach (var x in weaponCounts)
-                {
-                    var weaponCfg = FindWeaponConfig(x.data.trackerCategory, x.data.weapon);
-                    _sb.Append(string.Format(lang.GetMessage("ViewEventsCommand.WeaponCount", this, pl.UserIDString), weaponCfg.hexColor, x.count, weaponCfg.name, x.data.trackerCategory));
-                }
-                _sb.Append("<indent=0>");
-
-                if (grouping.Key != groupedRaidsNearMe.Last().Key)
-                    _sb.AppendLine($"\n");
+                SendChatMsg(pl, string.Format(lang.GetMessage("ViewEventsCommand.NoPermission", this, pl.UserIDString), $"/{command}"));
+                return;
             }
 
-            if (raidCount < 1)
-                _sb.AppendLine(lang.GetMessage("ViewEventsCommand.NotFound", this, pl.UserIDString));
+            try
+            {
+                if (!isAdmin)
+                {
+                    pl.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
+                    pl.SendNetworkUpdateImmediate();
+                }
 
-            SendChatMsg(pl, _sb.ToString(), "");
-            _lastViewCommand[pl.userID] = args;
+                float radius = _config.searchRadius > 0f ? _config.searchRadius : 50f;
+                float tempRadius;
+                if (args.Length > 0 && float.TryParse(args[0], out tempRadius))
+                    radius = Mathf.Clamp(tempRadius, 0f, 100f);
+
+                Vector3 pos = pl.transform.position;
+                        pos.y += pl.GetHeight() - .5f;
+
+                var groupedRaidsNearMe = FindRaidEventsInSphere(pos, radius)
+                    .Where(x => x.victimSteamID == pl.userID || (pl.Team != null && pl.Team.members.Contains(x.victimSteamID)) || FindWeaponConfig(x.GetTrackerCategory(), x.GetPrimaryWeaponShortname()).alwaysLog)
+                    .Where(x => DateTime.Now.Subtract(x.timestamp).Minutes > _config.playerViewExplosionsCommand.ignoreRaidEventsLessThanMinutes)
+                    .GroupBy(x => new RaidFilter { filter = $"{x.attackerSteamID.GetHashCode()}", filterType = "victim" });
+
+                DrawRaidEvents(pl, groupedRaidsNearMe, "victim", pl.UserIDString, radius, _config.playerViewExplosionsCommand.drawAttackerName);
+            }
+            catch (Exception ex)
+            {
+                LogToSingleFile("px_error_log", $"error drawing player explosions for {pl.userID}[{pl?.displayName ?? "Unknown"}]\n\nException: {ex.Message}");
+            }
+
+            if (!isAdmin)
+            {
+                pl.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, false);
+                pl.SendNetworkUpdateImmediate();
+            }
         }
 
         [Command("re")]
@@ -784,6 +739,104 @@ namespace Oxide.Plugins
         #endregion
 
         #region Helpers
+
+        private void DrawRaidEvents(BasePlayer pl, IEnumerable<IGrouping<RaidFilter, RaidEvent>> groupedRaidsNearMe, string filterType, string filter, float radius, bool drawAttackerName = true)
+        {
+            bool verbose = _verboseMode.ContainsKey(pl.userID) && _verboseMode[pl.userID];
+            int raidCount = groupedRaidsNearMe.Sum(x => x.Count());
+            _sb.Clear();
+            _sb.AppendLine(string.Format(lang.GetMessage("ViewEventsCommand.Header", this, pl.UserIDString), raidCount, radius));
+
+            if (!string.IsNullOrEmpty(filterType))
+                _sb.AppendLine(string.Format(lang.GetMessage("ViewEventsCommand.Filter", this, pl.UserIDString), filterType, filter));
+
+            var groupCloseNames = new Dictionary<ulong, List<Vector3>>();
+            foreach (var grouping in groupedRaidsNearMe)
+            {
+                var groupingColor = GetRandomColor();
+                var groupingColorHex = GetHexColor(groupingColor);
+                foreach (RaidEvent raidEvent in grouping)
+                {
+                    if (raidEvent.attackerTeamID > 0 && !_teamColors.ContainsKey(raidEvent.attackerTeamID))
+                    {
+                        _teamColors[raidEvent.attackerTeamID] = _uniqueColors[_currentTeamColorIdx];
+                        _currentTeamColorIdx = _currentTeamColorIdx < _uniqueColors.Count() ? _currentTeamColorIdx : -1;
+                        _currentTeamColorIdx++;
+                    }
+
+                    var teamColor = raidEvent.attackerTeamID > 0 ? _teamColors[raidEvent.attackerTeamID] : GetRandomColor();
+                    var teamColorHex = GetHexColor(teamColor);
+                    var weaponCfg = FindWeaponConfig(raidEvent.GetTrackerCategory(), raidEvent.GetPrimaryWeaponShortname());
+                    var weaponColor = weaponCfg.GetWeaponColor();
+
+                    if (filterType == "weapon")
+                    {
+                        groupingColor = weaponColor;
+                        groupingColorHex = GetHexColor(groupingColor);
+                    }
+                    else if (filterType == "team")
+                    {
+                        groupingColor = teamColor;
+                        groupingColorHex = GetHexColor(groupingColor);
+                    }
+
+                    string startText, endText;
+                    var startPos = raidEvent.startPos;
+                    var endPos = raidEvent.endPos;
+
+                    if (weaponCfg.shortArrow)
+                        startPos = raidEvent.endPos + new Vector3(0, .2f, 0);
+
+                    string attackerTeam = raidEvent.attackerTeamID > 0 ? string.Format(lang.GetMessage("ViewEventsCommand.Team", this, pl.UserIDString), teamColorHex, raidEvent.attackerTeamID) : "";
+                    if (verbose)
+                    {
+                        startText = string.Format(lang.GetMessage("ViewEventsCommand.StartTextExtra", this, pl.UserIDString), drawAttackerName ? raidEvent.attackerName : "X", raidEvent.attackerSteamID, attackerTeam);
+                        endText = string.Format(lang.GetMessage("ViewEventsCommand.EndTextExtra", this, pl.UserIDString), groupingColorHex, raidEvent.GetIndex(), raidEvent.GetWeaponName(), raidEvent.hitEntity.Replace(raidEvent.GetEventType(), raidEvent.GetPrettyEventType()));
+                    }
+                    else
+                    {
+                        startText = string.Format(lang.GetMessage("ViewEventsCommand.StartText", this, pl.UserIDString), drawAttackerName ? raidEvent.attackerName : "X", attackerTeam);
+                        endText = string.Format(lang.GetMessage("ViewEventsCommand.EndText", this, pl.UserIDString), groupingColorHex, raidEvent.GetWeaponName());
+                    }
+
+                    if (raidEvent.hitEntity.Contains("EVENT.ATTACHED"))
+                        Box(pl, endPos, .05f, groupingColor, _config.drawDuration);
+                    else if (raidEvent.hitEntity.Contains("EVENT.HIT"))
+                        Sphere(pl, endPos, .05f, groupingColor, _config.drawDuration);
+
+                    if (!groupCloseNames.ContainsKey(raidEvent.attackerSteamID))
+                        groupCloseNames[raidEvent.attackerSteamID] = new List<Vector3>();
+
+                    if (!groupCloseNames[raidEvent.attackerSteamID].Any(x => Vector3.Distance(x, startPos) < .1f))
+                    {
+                        groupCloseNames[raidEvent.attackerSteamID].Add(startPos);
+                        Text(pl, startPos, startText, groupingColor, _config.drawDuration);
+                    }
+
+                    Arrow(pl, startPos, endPos, .05f, groupingColor, _config.drawDuration);
+                    Text(pl, endPos + new Vector3(0, .05f, 0), endText, weaponColor, _config.drawDuration);
+                }
+                _sb.AppendLine(string.Format(lang.GetMessage("ViewEventsCommand.GroupingCount", this, pl.UserIDString), groupingColorHex, grouping.Count(), grouping.Key.filterType, grouping.Key.filter));
+
+                var weaponCounts = grouping
+                    .GroupBy(x => new { weapon = x.GetPrimaryWeaponShortname(), trackerCategory = x.GetTrackerCategory() })
+                    .Select(x => new { data = x.Key, count = x.Count() });
+
+                _sb.Append("<indent=6>");
+                foreach (var x in weaponCounts)
+                {
+                    var weaponCfg = FindWeaponConfig(x.data.trackerCategory, x.data.weapon);
+                    _sb.Append(string.Format(lang.GetMessage("ViewEventsCommand.WeaponCount", this, pl.UserIDString), weaponCfg.hexColor, x.count, weaponCfg.name, x.data.trackerCategory));
+                }
+                _sb.Append("<indent=0>");
+                _sb.AppendLine($"\n");
+            }
+
+            if (raidCount < 1)
+                _sb.AppendLine(lang.GetMessage("ViewEventsCommand.NotFound", this, pl.UserIDString));
+
+            SendChatMsg(pl, _sb.ToString().TrimEnd(), "");
+        }
 
         private void LogToSingleFile(string filename, string text) =>
             LogToFile(filename, string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}", DateTime.Now, text), this, false);
@@ -859,7 +912,7 @@ namespace Oxide.Plugins
                 };
                 _config.trackers[category][shortname] = weaponCfg;
 
-                LogToSingleFile($"weapon_config_log", $"added {weaponCfg.name} ({category} / {shortname}), enabled: {weaponCfg.enabled}");
+                LogToSingleFile("weapon_config_log", $"added {weaponCfg.name} ({category} / {shortname}), enabled: {weaponCfg.enabled}");
                 SaveConfig();
             }
 
@@ -944,10 +997,13 @@ namespace Oxide.Plugins
             if (IsDecayEntityIgnored(entity))
                 return true;
 
-            if (!_dev && _config.ignoreSameOwner && attacker != null && attacker.userID == entity.OwnerID && !attacker.IsAdmin)
+            if (attacker != null && attacker.IsAdmin)
+                return false;
+
+            if (!_dev && _config.ignoreSameOwner && attacker != null && attacker.userID == entity.OwnerID)
                 return true;
 
-            if (!_dev && _config.ignoreTeamMember && attacker != null && attacker.Team != null && attacker.Team.members.Contains(entity.OwnerID) && !attacker.IsAdmin)
+            if (!_dev && _config.ignoreTeamMember && attacker != null && attacker.Team != null && attacker.Team.members.Contains(entity.OwnerID))
                 return true;
 
             if (!_dev && _config.ignoreClanMemberOrAlly && attacker != null && Convert.ToBoolean(Clans?.Call("IsMemberOrAlly", attacker.UserIDString, entity.OwnerID.ToString())))
@@ -988,7 +1044,7 @@ namespace Oxide.Plugins
         {
             lang.RegisterMessages(new Dictionary<string, string> {
                 ["ChatPrefix"] = $"<color=#00a7fe>[{Title}]</color>",
-                ["RaidEvent.Message"] = "(RE: {raidEventIndex}) {attackerName}[{attackerSteamID}] is raiding {victimName}[{victimSteamID}] ~ {weaponName} -> {hitEntity} @ {gridPos} (teleportpos {teleportPos})",
+                ["RaidEvent.Message"] = "{attackerName}[{attackerSteamID}] is raiding {victimName}[{victimSteamID}] ~ {weaponName} -> {hitEntity} @ {gridPos} (teleportpos {teleportPos})",
                 ["RaidEvent.PrettyMessage"] = "<color=#f5646c>{attackerName}[{attackerSteamID}]</color> is raiding <color=#52bf6f>{victimName}[{victimSteamID}]</color> ~ <color={weaponColor}>{weaponName}</color> {raidEventType} <color=#00a7fe>{entityItemName}</color> ({entityShortname}) @ <color=#00a7fe>{gridPos}</color>",
                 ["ViewEventsCommand.HelpHeader"] = $"<size=16><color=#00a7fe>{Title}</color> Help</size>\n",
                 ["ViewEventsCommand.HelpDefault"] = "<size=12><color=#00a7fe>/x <radius></color> - Show all raid events within X radius (default 50m)</size>",
@@ -1016,273 +1072,306 @@ namespace Oxide.Plugins
                 ["ViewEventsCommand.EndText"] = "<size=12><color={0}>X</color> {1}</size>",
                 ["ViewEventsCommand.GroupingCount"] = "<color={0}>{1} raid event(s) [{2}, {3}]</color>",
                 ["ViewEventsCommand.WeaponCount"] = "<color={0}>• {1}x {2} <size=10>({3})</size> </color>",
-                ["ViewEventsCommand.NotFound"] = "no raid events found!"
+                ["ViewEventsCommand.NotFound"] = "no raid events found!",
+                ["ViewEventsCommand.NoPermission"] = "You do not have permission to use <color=#00a7fe>{0}</color>!"
             }, this);
-        }
-
-        protected override void LoadDefaultConfig()
-        {
-            _config = GetDefaultConfig();
         }
 
         private PluginConfig GetDefaultConfig()
         {
-            return new PluginConfig {
-                debug = false,
-                chatIconID = 76561199278762587,
-                deleteDataOnWipe = true,
-                daysBeforeDelete = 7f,
-                searchRadius = 50f,
-                drawDuration = 30f,
-                ignoreBuildingGrades = new Dictionary<BuildingGrade.Enum, bool> {
-                    { BuildingGrade.Enum.Twigs, true },
-                    { BuildingGrade.Enum.Wood, false },
-                    { BuildingGrade.Enum.Stone, false },
-                    { BuildingGrade.Enum.Metal, false },
-                    { BuildingGrade.Enum.TopTier, false }
-                },
-                ignoreSameOwner = true,
-                ignoreTeamMember = true,
-                ignoreClanMemberOrAlly = true,
-                enableNewTrackers = true,
-                printToClientConsole = true,
-                discord = new PluginConfig.DiscordConfig {
-                    webhookURL = "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
-                    simpleMessage = new PluginConfig.DiscordSimpleMessage {
-                        enabled = false,
-                        message = "{attackerName}[{attackerSteamID}] is raiding {victimName}[{victimSteamID}] ~ {weaponName} -> {raidEventType} {entityItemName} ({entityShortname}) @ {gridPos} (teleportpos {teleportPos})"
-                    },
-                    embed = new PluginConfig.DiscordEmbed {
-                        title = "{attackerName} is raiding {victimName} @ {gridPos}",
-                        thumbnail = new PluginConfig.DiscordEmbedThumbnail {
-                            url = "https://www.rustedit.io/images/imagelibrary/{weaponItemShortname}.png"
-                        },
-                        fields = new List<PluginConfig.DiscordEmbedField> {
-                            {
-                                new PluginConfig.DiscordEmbedField {
-                                    name = "Weapon",
-                                    value = "{weaponName} ({raidTrackerCategory} / {weaponShortname})",
-                                    inline = false
-                                }
-                            },
-                            {
-                                new PluginConfig.DiscordEmbedField {
-                                    name = "Entity",
-                                    value = "{raidEventType} {entityItemName} ({entityShortname})",
-                                    inline = false
-                                }
-                            },
-                            {
-                                new PluginConfig.DiscordEmbedField {
-                                    name = "Attacker",
-                                    value = "{attackerName} \n[Steam Profile](https://steamcommunity.com/profiles/{attackerSteamID}) ({attackerSteamID})\n[SteamID.uk](https://steamid.uk/profile/{attackerSteamID})\n\n**Attacker Team**\n{attackerTeamName}",
-                                    inline = true
-                                }
-                            },
-                            {
-                                new PluginConfig.DiscordEmbedField {
-                                    name = "Victim",
-                                    value = "{victimName} \n[Steam Profile](https://steamcommunity.com/profiles/{victimSteamID}) ({victimSteamID})\n[SteamID.uk](https://steamid.uk/profile/{victimSteamID})\n\n**Victim Team**\n{victimTeamName}",
-                                    inline = true
-                                }
-                            },
-                            {
-                                new PluginConfig.DiscordEmbedField {
-                                    name = "Location",
-                                    value = "{gridPos} - teleportpos {teleportPos}",
-                                    inline = false
-                                }
-                            }
-                        }
-                    }
-                },
-                trackers = new SortedDictionary<string, SortedDictionary<string, PluginConfig.WeaponConfig>> {
-                    {
-                        "_global",
-                        new SortedDictionary<string, PluginConfig.WeaponConfig> {
-                            { "*", new PluginConfig.WeaponConfig { enabled = false, name = "Enable all trackers in every category" } },
-                        }
-                    },
-                    {
-                        "entity_collision",
-                        new SortedDictionary<string, PluginConfig.WeaponConfig> {
-                            { "*", new PluginConfig.WeaponConfig { enabled = false, name = "Enable all 'entity_collision' trackers" } },
-                            { "40mm_grenade_he", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764" } },
-                            { "40mm_grenade_smoke", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#4B4B4B" } },
-                            { "explosive.satchel.deployed", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#BA9500" } },
-                            { "explosive.timed.deployed", new PluginConfig.WeaponConfig { enabled = true, name = "C4", hexColor = "#FF5764" } },
-                            { "grenade.beancan.deployed", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#BA9500" } },
-                            { "grenade.f1.deployed", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#538C4F" } },
-                            { "grenade.flashbang.deployed", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#4B4B4B" } },
-                            { "grenade.molotov.deployed", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
-                            { "grenade.smoke.deployed", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#4B4B4B" } },
-                            { "grenade.supplysignal.deployed", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#B867FF", alwaysLog = true, shortArrow = true } },
-                            { "rocket_basic", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#B867FF" } },
-                            { "rocket_fire", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
-                            { "rocket_hv", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#528EFF" } },
-                            { "rocket_mlrs", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764", alwaysLog = true } },
-                            { "survey_charge.deployed", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#212121" } }
-                        }
-                    },
-                    {
-                        "entity_death_ammo",
-                        new SortedDictionary<string, PluginConfig.WeaponConfig> {
-                            { "*", new PluginConfig.WeaponConfig { enabled = false, name = "Enable all 'entity_death_ammo' trackers" } },
-                            { "ammo.grenadelauncher.buckshot", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764" } },
-                            { "ammo.handmade.shell", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FFC880" } },
-                            { "ammo.nailgun.nails", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#528EFF" } },
-                            { "ammo.pistol", new PluginConfig.WeaponConfig { enabled = true, name = "Pistol Ammo", hexColor = "#FFC880" } },
-                            { "ammo.pistol.fire", new PluginConfig.WeaponConfig { enabled = true, name = "Inc Pistol Ammo", hexColor = "#FF8C24" } },
-                            { "ammo.pistol.hv", new PluginConfig.WeaponConfig { enabled = true, name = "HV Pistol Ammo", hexColor = "#528EFF" } },
-                            { "ammo.rifle", new PluginConfig.WeaponConfig { enabled = true, name = "Rifle Ammo", hexColor = "#FFC880" } },
-                            { "ammo.rifle.explosive", new PluginConfig.WeaponConfig { enabled = true, name = "Exp Rifle Ammo", hexColor = "#FF5764" } },
-                            { "ammo.rifle.hv", new PluginConfig.WeaponConfig { enabled = true, name = "HV Rifle Ammo", hexColor = "#528EFF" } },
-                            { "ammo.rifle.incendiary", new PluginConfig.WeaponConfig { enabled = true, name = "Inc Rifle Ammo", hexColor = "#FF8C24" } },
-                            { "ammo.shotgun", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764" } },
-                            { "ammo.shotgun.fire", new PluginConfig.WeaponConfig { enabled = true, name = "12 Gauge Inc Shell", hexColor = "#FF8C24" } },
-                            { "ammo.shotgun.slug", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#3DBF39" } },
-                            { "ammo.snowballgun", new PluginConfig.WeaponConfig { enabled = true, name = "Snowball", hexColor = "#3E8E91" } },
-                            { "arrow.bone", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#212121" } },
-                            { "arrow.fire", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
-                            { "arrow.hv", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#528EFF" } },
-                            { "arrow.wooden", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FFC880" } },
-                            { "speargun.spear", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#7E7E7E" } }
-                        }
-                    },
-                    {
-                        "entity_death_fire",
-                        new SortedDictionary<string, PluginConfig.WeaponConfig> {
-                            { "*", new PluginConfig.WeaponConfig { enabled = false, name = "Enable all 'entity_death_fire' trackers" } },
-                            { "fire_damage", new PluginConfig.WeaponConfig { enabled = true, name = "Fire", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
-                            { "fireball", new PluginConfig.WeaponConfig { enabled = true, name = "Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
-                            { "fireball_small", new PluginConfig.WeaponConfig { enabled = true, name = "Small Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
-                            { "fireball_small_arrow", new PluginConfig.WeaponConfig { enabled = true, name = "Arrow Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
-                            { "fireball_small_shotgun", new PluginConfig.WeaponConfig { enabled = true, name = "Shotgun Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
-                            { "flameturret_fireball", new PluginConfig.WeaponConfig { enabled = true, name = "Flame Turret Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } }
-                        }
-                    },
-                    {
-                        "entity_death_weapon",
-                        new SortedDictionary<string, PluginConfig.WeaponConfig> {
-                            { "*", new PluginConfig.WeaponConfig { enabled = false, name = "Enable all 'entity_death_weapon' trackers" } },
-                            { "ammo.grenadelauncher.he", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764", shortArrow = true } },
-                            { "ammo.rocket.basic", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#B867FF", shortArrow = true } },
-                            { "ammo.rocket.fire", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24", shortArrow = true } },
-                            { "ammo.rocket.hv", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#528EFF", shortArrow = true } },
-                            { "ammo.rocket.mlrs", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764", shortArrow = true } },
-                            { "axe.salvaged", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "bone.club", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "bow.compound", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#B867FF" } },
-                            { "bow.hunting", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#B867FF" } },
-                            { "candycaneclub", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "chainsaw", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764" } },
-                            { "concretehatchet", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "concretepickaxe", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "crossbow", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#B867FF" } },
-                            { "explosive.satchel", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#BA9500", shortArrow = true } },
-                            { "explosive.timed", new PluginConfig.WeaponConfig { enabled = false, name = "C4", hexColor = "#FF5764", shortArrow = true } },
-                            { "flamethrower", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
-                            { "flashlight.held", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#212121" } },
-                            { "grenade.beancan", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#BA9500", shortArrow = true } },
-                            { "grenade.f1", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#538C4F", shortArrow = true } },
-                            { "grenade.flashbang", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4B4B4B", shortArrow = true } },
-                            { "grenade.molotov", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24", shortArrow = true } },
-                            { "hammer.salvaged", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "hatchet", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "hmlmg", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "icepick.salvaged", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "jackhammer", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF5764" } },
-                            { "knife.bone", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "knife.butcher", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "knife.combat", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "lmg.m249", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "longsword", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "lumberjack.hatchet", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "lumberjack.pickaxe", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "mace", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "mace.baseballbat", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "machete", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "multiplegrenadelauncher", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "paddle", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "pickaxe", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "pistol.eoka", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#3E8E91" } },
-                            { "pistol.m92", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
-                            { "pistol.nailgun", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#3E8E91" } },
-                            { "pistol.prototype17", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#3E8E91" } },
-                            { "pistol.python", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
-                            { "pistol.revolver", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
-                            { "pistol.semiauto", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
-                            { "pitchfork", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "rifle.ak", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rifle.ak.ice", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rifle.bolt", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rifle.l96", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rifle.lr300", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rifle.m39", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rifle.semiauto", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#FF5764" } },
-                            { "rock", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "salvaged.cleaver", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "salvaged.sword", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "shotgun.double", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
-                            { "shotgun.pump", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
-                            { "shotgun.spas12", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
-                            { "shotgun.waterpipe", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
-                            { "sickle", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "smg.2", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#365EEF" } },
-                            { "smg.mp5", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#365EEF" } },
-                            { "smg.thompson", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#365EEF" } },
-                            { "snowballgun", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
-                            { "spear.stone", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#CB60DB" } },
-                            { "spear.wooden", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#CB60DB" } },
-                            { "speargun", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#CB60DB" } },
-                            { "stone.pickaxe", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "stonehatchet", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
-                            { "surveycharge", new PluginConfig.WeaponConfig { enabled = false, hexColor = "#212121", shortArrow = true } },
-                            { "torch", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
-                            { "torch.torch.skull", new PluginConfig.WeaponConfig { enabled = true, hexColor = "#FF8C24" } }
-                        }
-                    }
-                },
-                eventTypes = new SortedDictionary<string, string> {
-                    { "EVENT.ATTACHED", "attached to"},
-                    { "EVENT.BURNT", "burnt" },
-                    { "EVENT.DESTROYED", "destroyed" },
-                    { "EVENT.HIT", "hit" },
-                    { "EVENT.NO_HIT", "no hit" }
-                }
-            };
+            return new PluginConfig();
+        }
+
+        protected override void LoadDefaultConfig()
+        {
+            Log($"Loading default configuration");
+            _config = GetDefaultConfig();
         }
 
         protected override void LoadConfig()
         {
+            _instance = this;
             base.LoadConfig();
-            _config = Config.ReadObject<PluginConfig>();
-            SaveConfig();
+            try
+            {
+                _config = Config.ReadObject<PluginConfig>();
+                if (_config == null)
+                {
+                    throw new JsonException();
+                }
 
-            var webhookURL = _config.discord.webhookURL;
-            Puts($"Discord webhook {(!string.IsNullOrEmpty(webhookURL) && !webhookURL.Contains("Intro-to-Webhooks") ? "enabled" : "disabled")}!");
+                if (MaybeUpdateConfig(_config))
+                {
+                    var backupConfigFilename = $"{Name}\\ConfigBackup\\{Name}_{DateTime.Now:yyyy-M-dd_HH-mm-ss}";
+                    LogWarning("Configuration appears to be outdated; updating and saving");
+                    LogWarning($"Saving configuration backup to /oxide/data/{Utility.CleanPath(backupConfigFilename)}.json");
+                    Interface.Oxide.DataFileSystem.WriteObject(backupConfigFilename, _config);
+                    SaveConfig();
+                }
+                else
+                    Log("Configuration is up to date");
+
+                var webhookURL = _config.discord.webhookURL;
+                Puts($"Discord webhook {(!string.IsNullOrEmpty(webhookURL) && !webhookURL.Contains("Intro-to-Webhooks") ? "enabled" : "disabled")}!");
+            }
+            catch
+            {
+                LogWarning($"Configuration file {Name}.json is invalid; using defaults");
+                _isConfigValid = false;
+                LoadDefaultConfig();
+            }
         }
 
-        protected override void SaveConfig() => Config.WriteObject(_config, true);
-
-        private class PluginConfig
+        protected override void SaveConfig()
         {
-            public bool debug;
-            public ulong chatIconID;
-            public bool deleteDataOnWipe;
-            public float daysBeforeDelete;
-            public float searchRadius;
-            public float drawDuration;
-            public Dictionary<BuildingGrade.Enum, bool> ignoreBuildingGrades = new Dictionary<BuildingGrade.Enum, bool>();
-            public bool ignoreSameOwner;
-            public bool ignoreTeamMember;
-            public bool ignoreClanMemberOrAlly;
-            public bool enableNewTrackers;
-            public bool printToClientConsole;
+            Log($"Configuration changes saved to {Name}.json");
+            Config.WriteObject(_config, true);
+        }
 
-            public DiscordConfig discord = new DiscordConfig();
-            public SortedDictionary<string, SortedDictionary<string, WeaponConfig>> trackers = new SortedDictionary<string, SortedDictionary<string, WeaponConfig>>();
-            public SortedDictionary<string, string> eventTypes = new SortedDictionary<string, string>();
+        private class PluginConfig : SerializableConfiguration
+        {
+            public bool debug = false;
+            public ulong chatIconID = 76561199278762587;
+            public bool deleteDataOnWipe = true;
+            public float daysBeforeDelete = 7f;
+            public float searchRadius = 50f;
+            public float drawDuration = 30f;
+
+            [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public Dictionary<BuildingGrade.Enum, bool> ignoreBuildingGrades = new Dictionary<BuildingGrade.Enum, bool> {
+                { BuildingGrade.Enum.Twigs, true },
+                { BuildingGrade.Enum.Wood, false },
+                { BuildingGrade.Enum.Stone, false },
+                { BuildingGrade.Enum.Metal, false },
+                { BuildingGrade.Enum.TopTier, false }
+            };
+
+            public bool ignoreSameOwner = true;
+            public bool ignoreTeamMember = true;
+            public bool ignoreClanMemberOrAlly = true;
+            public bool enableNewTrackers = true;
+            public bool printToClientConsole = true;
+            public PlayerViewExplosionsCommand playerViewExplosionsCommand = new PlayerViewExplosionsCommand {
+                drawAttackerName = false,
+                ignoreRaidEventsLessThanMinutes = 30f
+            };
+            public NotificationCooldown notificationCooldown = new NotificationCooldown {
+                enabled = false,
+                cooldown = 300f
+            };
+
+            public DiscordConfig discord = new DiscordConfig {
+                webhookURL = "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+                simpleMessage = new DiscordSimpleMessage {
+                    enabled = false,
+                    message = "{attackerName}[{attackerSteamID}] is raiding {victimName}[{victimSteamID}] ~ {weaponName} -> {raidEventType} {entityItemName} ({entityShortname}) @ {gridPos} (teleportpos {teleportPos})"
+                },
+                embed = new DiscordEmbed {
+                    title = "{attackerName} is raiding {victimName} @ {gridPos}",
+                    thumbnail = new DiscordEmbedThumbnail {
+                        url = "https://www.rustedit.io/images/imagelibrary/{weaponItemShortname}.png"
+                    },
+                    fields = new List<DiscordEmbedField> {
+                        {
+                            new DiscordEmbedField {
+                                name = "Weapon",
+                                value = "{weaponName} ({raidTrackerCategory} / {weaponShortname})",
+                                inline = false
+                            }
+                        },
+                        {
+                            new DiscordEmbedField {
+                                name = "Entity",
+                                value = "{raidEventType} {entityItemName} ({entityShortname})",
+                                inline = false
+                            }
+                        },
+                        {
+                            new DiscordEmbedField {
+                                name = "Attacker",
+                                value = "{attackerName} \n[Steam Profile](https://steamcommunity.com/profiles/{attackerSteamID}) ({attackerSteamID})\n[SteamID.uk](https://steamid.uk/profile/{attackerSteamID})\n\n**Attacker Team**\n{attackerTeamName}",
+                                inline = true
+                            }
+                        },
+                        {
+                            new DiscordEmbedField {
+                                name = "Victim",
+                                value = "{victimName} \n[Steam Profile](https://steamcommunity.com/profiles/{victimSteamID}) ({victimSteamID})\n[SteamID.uk](https://steamid.uk/profile/{victimSteamID})\n\n**Victim Team**\n{victimTeamName}",
+                                inline = true
+                            }
+                        },
+                        {
+                            new DiscordEmbedField {
+                                name = "Location",
+                                value = "{gridPos} - teleportpos {teleportPos}",
+                                inline = false
+                            }
+                        }
+                    },
+                    footer = new DiscordEmbedFooter {
+                        text = $"{_instance.Title} {{{0}}} by {_instance.Author}",
+                        icon_url = "https://i.imgur.com/DluJ5X5.png"
+                    }
+                }
+            };
+
+            [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public SortedDictionary<string, SortedDictionary<string, WeaponConfig>> trackers = new SortedDictionary<string, SortedDictionary<string, WeaponConfig>> {
+                {
+                    "_global",
+                    new SortedDictionary<string, WeaponConfig> {
+                        { "*", new WeaponConfig { enabled = false, name = "Enable all trackers in every category" } }
+                    }
+                },
+                {
+                    "entity_collision",
+                    new SortedDictionary<string, WeaponConfig> {
+                        { "*", new WeaponConfig { enabled = false, name = "Enable all 'entity_collision' trackers" } },
+                        { "40mm_grenade_he", new WeaponConfig { enabled = true, hexColor = "#FF5764" } },
+                        { "40mm_grenade_smoke", new WeaponConfig { enabled = false, hexColor = "#4B4B4B" } },
+                        { "explosive.satchel.deployed", new WeaponConfig { enabled = true, hexColor = "#BA9500" } },
+                        { "explosive.timed.deployed", new WeaponConfig { enabled = true, name = "C4", hexColor = "#FF5764" } },
+                        { "grenade.beancan.deployed", new WeaponConfig { enabled = false, hexColor = "#BA9500" } },
+                        { "grenade.f1.deployed", new WeaponConfig { enabled = false, hexColor = "#538C4F" } },
+                        { "grenade.flashbang.deployed", new WeaponConfig { enabled = false, hexColor = "#4B4B4B" } },
+                        { "grenade.molotov.deployed", new WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
+                        { "grenade.smoke.deployed", new WeaponConfig { enabled = false, hexColor = "#4B4B4B" } },
+                        { "grenade.supplysignal.deployed", new WeaponConfig { enabled = true, hexColor = "#B867FF", alwaysLog = true, shortArrow = true } },
+                        { "rocket_basic", new WeaponConfig { enabled = true, hexColor = "#B867FF" } },
+                        { "rocket_fire", new WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
+                        { "rocket_hv", new WeaponConfig { enabled = true, hexColor = "#528EFF" } },
+                        { "rocket_mlrs", new WeaponConfig { enabled = true, hexColor = "#FF5764", alwaysLog = true } },
+                        { "survey_charge.deployed", new WeaponConfig { enabled = false, hexColor = "#212121" } }
+                    }
+                },
+                {
+                    "entity_death_ammo",
+                    new SortedDictionary<string, WeaponConfig> {
+                        { "*", new WeaponConfig { enabled = false, name = "Enable all 'entity_death_ammo' trackers" } },
+                        { "ammo.grenadelauncher.buckshot", new WeaponConfig { enabled = true, hexColor = "#FF5764" } },
+                        { "ammo.handmade.shell", new WeaponConfig { enabled = true, hexColor = "#FFC880" } },
+                        { "ammo.nailgun.nails", new WeaponConfig { enabled = true, hexColor = "#528EFF" } },
+                        { "ammo.pistol", new WeaponConfig { enabled = true, name = "Pistol Ammo", hexColor = "#FFC880" } },
+                        { "ammo.pistol.fire", new WeaponConfig { enabled = true, name = "Inc Pistol Ammo", hexColor = "#FF8C24" } },
+                        { "ammo.pistol.hv", new WeaponConfig { enabled = true, name = "HV Pistol Ammo", hexColor = "#528EFF" } },
+                        { "ammo.rifle", new WeaponConfig { enabled = true, name = "Rifle Ammo", hexColor = "#FFC880" } },
+                        { "ammo.rifle.explosive", new WeaponConfig { enabled = true, name = "Exp Rifle Ammo", hexColor = "#FF5764" } },
+                        { "ammo.rifle.hv", new WeaponConfig { enabled = true, name = "HV Rifle Ammo", hexColor = "#528EFF" } },
+                        { "ammo.rifle.incendiary", new WeaponConfig { enabled = true, name = "Inc Rifle Ammo", hexColor = "#FF8C24" } },
+                        { "ammo.shotgun", new WeaponConfig { enabled = true, hexColor = "#FF5764" } },
+                        { "ammo.shotgun.fire", new WeaponConfig { enabled = true, name = "12 Gauge Inc Shell", hexColor = "#FF8C24" } },
+                        { "ammo.shotgun.slug", new WeaponConfig { enabled = true, hexColor = "#3DBF39" } },
+                        { "ammo.snowballgun", new WeaponConfig { enabled = true, name = "Snowball", hexColor = "#3E8E91" } },
+                        { "arrow.bone", new WeaponConfig { enabled = true, hexColor = "#212121" } },
+                        { "arrow.fire", new WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
+                        { "arrow.hv", new WeaponConfig { enabled = true, hexColor = "#528EFF" } },
+                        { "arrow.wooden", new WeaponConfig { enabled = true, hexColor = "#FFC880" } },
+                        { "speargun.spear", new WeaponConfig { enabled = false, hexColor = "#7E7E7E" } }
+                    }
+                },
+                {
+                    "entity_death_fire",
+                    new SortedDictionary<string, WeaponConfig> {
+                        { "*", new WeaponConfig { enabled = false, name = "Enable all 'entity_death_fire' trackers" } },
+                        { "fire_damage", new WeaponConfig { enabled = true, name = "Fire", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
+                        { "fireball", new WeaponConfig { enabled = true, name = "Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
+                        { "fireball_small", new WeaponConfig { enabled = true, name = "Small Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
+                        { "fireball_small_arrow", new WeaponConfig { enabled = true, name = "Arrow Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
+                        { "fireball_small_shotgun", new WeaponConfig { enabled = true, name = "Shotgun Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } },
+                        { "flameturret_fireball", new WeaponConfig { enabled = true, name = "Flame Turret Fireball", hexColor = "#FF8C24", discordIcon = "https://i.imgur.com/dBqgQv9.png" } }
+                    }
+                },
+                {
+                    "entity_death_weapon",
+                    new SortedDictionary<string, WeaponConfig> {
+                        { "*", new WeaponConfig { enabled = false, name = "Enable all 'entity_death_weapon' trackers" } },
+                        { "ammo.grenadelauncher.he", new WeaponConfig { enabled = false, hexColor = "#FF5764", shortArrow = true } },
+                        { "ammo.rocket.basic", new WeaponConfig { enabled = false, hexColor = "#B867FF", shortArrow = true } },
+                        { "ammo.rocket.fire", new WeaponConfig { enabled = false, hexColor = "#FF8C24", shortArrow = true } },
+                        { "ammo.rocket.hv", new WeaponConfig { enabled = false, hexColor = "#528EFF", shortArrow = true } },
+                        { "ammo.rocket.mlrs", new WeaponConfig { enabled = false, hexColor = "#FF5764", shortArrow = true } },
+                        { "axe.salvaged", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "bone.club", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "bow.compound", new WeaponConfig { enabled = false, hexColor = "#B867FF" } },
+                        { "bow.hunting", new WeaponConfig { enabled = false, hexColor = "#B867FF" } },
+                        { "candycaneclub", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "chainsaw", new WeaponConfig { enabled = true, hexColor = "#FF5764" } },
+                        { "concretehatchet", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "concretepickaxe", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "crossbow", new WeaponConfig { enabled = false, hexColor = "#B867FF" } },
+                        { "explosive.satchel", new WeaponConfig { enabled = false, hexColor = "#BA9500", shortArrow = true } },
+                        { "explosive.timed", new WeaponConfig { enabled = false, name = "C4", hexColor = "#FF5764", shortArrow = true } },
+                        { "flamethrower", new WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
+                        { "flashlight.held", new WeaponConfig { enabled = true, hexColor = "#212121" } },
+                        { "grenade.beancan", new WeaponConfig { enabled = true, hexColor = "#BA9500", shortArrow = true } },
+                        { "grenade.f1", new WeaponConfig { enabled = true, hexColor = "#538C4F", shortArrow = true } },
+                        { "grenade.flashbang", new WeaponConfig { enabled = true, hexColor = "#4B4B4B", shortArrow = true } },
+                        { "grenade.molotov", new WeaponConfig { enabled = true, hexColor = "#FF8C24", shortArrow = true } },
+                        { "hammer.salvaged", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "hatchet", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "hmlmg", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "icepick.salvaged", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "jackhammer", new WeaponConfig { enabled = true, hexColor = "#FF5764" } },
+                        { "knife.bone", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "knife.butcher", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "knife.combat", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "lmg.m249", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "longsword", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "lumberjack.hatchet", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "lumberjack.pickaxe", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "mace", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "mace.baseballbat", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "machete", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "multiplegrenadelauncher", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "paddle", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "pickaxe", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "pistol.eoka", new WeaponConfig { enabled = true, hexColor = "#3E8E91" } },
+                        { "pistol.m92", new WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
+                        { "pistol.nailgun", new WeaponConfig { enabled = true, hexColor = "#3E8E91" } },
+                        { "pistol.prototype17", new WeaponConfig { enabled = true, hexColor = "#3E8E91" } },
+                        { "pistol.python", new WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
+                        { "pistol.revolver", new WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
+                        { "pistol.semiauto", new WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
+                        { "pitchfork", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "rifle.ak", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rifle.ak.ice", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rifle.bolt", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rifle.l96", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rifle.lr300", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rifle.m39", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rifle.semiauto", new WeaponConfig { enabled = false, hexColor = "#FF5764" } },
+                        { "rock", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "salvaged.cleaver", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "salvaged.sword", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "shotgun.double", new WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
+                        { "shotgun.pump", new WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
+                        { "shotgun.spas12", new WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
+                        { "shotgun.waterpipe", new WeaponConfig { enabled = false, hexColor = "#3DBF39" } },
+                        { "sickle", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "smg.2", new WeaponConfig { enabled = false, hexColor = "#365EEF" } },
+                        { "smg.mp5", new WeaponConfig { enabled = false, hexColor = "#365EEF" } },
+                        { "smg.thompson", new WeaponConfig { enabled = false, hexColor = "#365EEF" } },
+                        { "snowballgun", new WeaponConfig { enabled = false, hexColor = "#3E8E91" } },
+                        { "spear.stone", new WeaponConfig { enabled = true, hexColor = "#CB60DB" } },
+                        { "spear.wooden", new WeaponConfig { enabled = true, hexColor = "#CB60DB" } },
+                        { "speargun", new WeaponConfig { enabled = true, hexColor = "#CB60DB" } },
+                        { "stone.pickaxe", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "stonehatchet", new WeaponConfig { enabled = true, hexColor = "#4DBEFF" } },
+                        { "surveycharge", new WeaponConfig { enabled = false, hexColor = "#212121", shortArrow = true } },
+                        { "torch", new WeaponConfig { enabled = true, hexColor = "#FF8C24" } },
+                        { "torch.torch.skull", new WeaponConfig { enabled = true, hexColor = "#FF8C24" } }
+                    }
+                }
+            };
+
+            [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public SortedDictionary<string, string> eventTypes = new SortedDictionary<string, string>{
+                { "EVENT.ATTACHED", "attached to"},
+                { "EVENT.BURNT", "burnt" },
+                { "EVENT.DESTROYED", "destroyed" },
+                { "EVENT.HIT", "hit" },
+                { "EVENT.NO_HIT", "no hit" }
+            };
 
             public class WeaponConfig
             {
@@ -1291,16 +1380,20 @@ namespace Oxide.Plugins
 
                 [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
                 public string hexColor;
+
                 [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
                 public bool alwaysLog;
+
                 [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
                 public bool shortArrow;
+
                 [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
                 public string discordIcon;
 
                 public bool notifyConsole;
                 public bool notifyAdmin;
                 public bool notifyDiscord;
+                public bool logToFile;
 
                 public Color GetWeaponColor()
                 {
@@ -1328,7 +1421,11 @@ namespace Oxide.Plugins
             {
                 public string title;
                 public DiscordEmbedThumbnail thumbnail = new DiscordEmbedThumbnail();
+
+                [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
                 public List<DiscordEmbedField> fields = new List<DiscordEmbedField>();
+
+                public DiscordEmbedFooter footer = new DiscordEmbedFooter();
             }
 
             public class DiscordEmbedThumbnail
@@ -1342,6 +1439,24 @@ namespace Oxide.Plugins
                 public string value;
                 public bool inline;
             }
+
+            public class DiscordEmbedFooter
+            {
+                public string text;
+                public string icon_url;
+            }
+
+            public class PlayerViewExplosionsCommand
+            {
+                public bool drawAttackerName;
+                public float ignoreRaidEventsLessThanMinutes;
+            }
+
+            public class NotificationCooldown
+            {
+                public bool enabled;
+                public float cooldown;
+            }
         }
 
         public class DecayEntityIgnoreOptions
@@ -1349,6 +1464,79 @@ namespace Oxide.Plugins
             public string name;
             public bool ignore;
             public bool ignoreDiscord;
+        }
+
+        #endregion
+
+        #region Config Helpers
+
+        private class SerializableConfiguration
+        {
+            public string ToJson() => JsonConvert.SerializeObject(this);
+
+            public Dictionary<string, object> ToDictionary() => JsonHelper.Deserialize(ToJson()) as Dictionary<string, object>;
+        }
+
+        private static class JsonHelper
+        {
+            public static object Deserialize(string json) => ToObject(JToken.Parse(json));
+
+            private static object ToObject(JToken token)
+            {
+                switch (token.Type)
+                {
+                    case JTokenType.Object:
+                        return token.Children<JProperty>()
+                                    .ToDictionary(prop => prop.Name,
+                                                  prop => ToObject(prop.Value));
+
+                    case JTokenType.Array:
+                        return token.Select(ToObject).ToList();
+
+                    default:
+                        return ((JValue)token).Value;
+                }
+            }
+        }
+
+        private bool MaybeUpdateConfig(SerializableConfiguration config)
+        {
+            var currentWithDefaults = config.ToDictionary();
+            var currentRaw = Config.ToDictionary(x => x.Key, x => x.Value);
+            return MaybeUpdateConfigDict(currentWithDefaults, currentRaw);
+        }
+
+        private bool MaybeUpdateConfigDict(Dictionary<string, object> currentWithDefaults, Dictionary<string, object> currentRaw)
+        {
+            bool changed = false;
+
+            foreach (var key in currentWithDefaults.Keys)
+            {
+                object currentRawValue;
+                if (currentRaw.TryGetValue(key, out currentRawValue))
+                {
+                    var defaultDictValue = currentWithDefaults[key] as Dictionary<string, object>;
+                    var currentDictValue = currentRawValue as Dictionary<string, object>;
+
+                    if (defaultDictValue != null)
+                    {
+                        if (currentDictValue == null)
+                        {
+                            currentRaw[key] = currentWithDefaults[key];
+                            changed = true;
+                        }
+                        else if (MaybeUpdateConfigDict(defaultDictValue, currentDictValue))
+                            changed = true;
+                    }
+                }
+                else
+                {
+                    currentRaw[key] = currentWithDefaults[key];
+                    changed = true;
+                }
+            }
+
+            return changed;
         }
 
         #endregion
@@ -1426,6 +1614,7 @@ namespace Oxide.Plugins
                     { "entityItemName", _instance.GetPrettyItemName(entityItemShortname) },
                     { "entityShortname", entityShortname },
                     { "entityItemShortname", entityItemShortname },
+                    { "raidEventIndex", raidEvent.GetIndex().ToString() },
                     { "raidTrackerCategory", raidEvent.GetTrackerCategory() },
                     { "raidEventType", raidEvent.GetPrettyEventType() },
                     { "gridPos", gridPos },
@@ -1461,6 +1650,10 @@ namespace Oxide.Plugins
                                     url = !string.IsNullOrEmpty(weaponCfg.discordIcon) ? weaponCfg.discordIcon : _instance.StringReplaceKeys(_instance._config.discord.embed.thumbnail.url, keyValues)
                                 },
                                 fields = fields,
+                                footer = new {
+                                    text = string.Format(_instance._config.discord.embed.footer.text ?? "", _instance.Version),
+                                    icon_url = _instance._config.discord.embed.footer.icon_url ?? ""
+                                },
                                 color = decimalColor,
                                 timestamp = raidEvent.timestamp
                             }
@@ -1477,7 +1670,7 @@ namespace Oxide.Plugins
                         JObject jsonRes = JObject.Parse(response);
                         float retryAfter = Math.Max(1f, jsonRes["retry_after"].Value<int>() / 1000f);
 
-                        _instance.PrintDebug($"(RaidEvent: {reIdx}) Discord webhook rate limited [retry_after: {retryAfter}s]");
+                        _instance.PrintDebug($"(RaidEvent: {reIdx}) Discord SendWebhook rate limited [retry_after: {retryAfter}s]");
 
                         _rateLimited = true;
                         _instance.timer.In(retryAfter, () => {
@@ -1489,7 +1682,7 @@ namespace Oxide.Plugins
                     else if (code != 200 && code != 204)
                     {
                         _busy = Time.realtimeSinceStartup;
-                        _instance.Puts($"(RaidEvent: {reIdx}) Discord webhook failed! Response: [{code}]\n{response}");
+                        _instance.Puts($"(RaidEvent: {reIdx}) Discord SendWebhook failed! Response: [{code}]\n{response}");
                     }
                     else
                     {
@@ -1652,6 +1845,18 @@ namespace Oxide.Plugins
             public void Notify(BaseEntity entity, string damagedEntityPrefab = null)
             {
                 var weaponCfg = _instance.FindWeaponConfig(GetTrackerCategory(), GetPrimaryWeaponShortname());
+                if (weaponCfg.logToFile || _instance._dev)
+                    _instance.LogToFile("raid_events", GetMessage(), _instance);
+
+                if (_instance._config.notificationCooldown.enabled && !_instance._dev)
+                {
+                    float cooldown;
+                    if (_instance._notificationCooldown.TryGetValue(attackerSteamID, out cooldown) && cooldown > Time.realtimeSinceStartup)
+                        return;
+
+                    _instance._notificationCooldown[attackerSteamID] = Time.realtimeSinceStartup + _instance._config.notificationCooldown.cooldown;
+                }
+                
                 if (weaponCfg.notifyConsole)
                     _instance.Puts(GetMessage());
 
@@ -1663,7 +1868,8 @@ namespace Oxide.Plugins
                     if (string.IsNullOrEmpty(damagedEntityPrefab) && entity != null)
                         damagedEntityPrefab = entity.PrefabName;
 
-                    if (!_instance._dev && _instance._decayEntityIgnoreList.ContainsKey(damagedEntityPrefab) && _instance._decayEntityIgnoreList[damagedEntityPrefab].ignoreDiscord)
+                    DecayEntityIgnoreOptions decayEntOptions;
+                    if (!_instance._dev && _instance._decayEntityIgnoreList.TryGetValue(damagedEntityPrefab, out decayEntOptions) && decayEntOptions.ignoreDiscord)
                         return;
 
                     _instance._discordWebhookManager.SendWebhook(this);
