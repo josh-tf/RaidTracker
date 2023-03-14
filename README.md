@@ -389,14 +389,14 @@ Trackers and notifications can be enabled globally with the global wildcard item
 
 ## Notification Cooldown
 
-All notification types from the same attacking player can be put on cooldown with the `notificationCooldown.enabled` config option. When enabled, the notification cooldown per attacking player is 5 minutes by default. The cooldown duration can be changed with the `notificationCooldown.cooldownSeconds` config option.
+All notification types from the same attacking player can be put on cooldown with the `notificationCooldown.enabled` config option. When enabled, the notification cooldown per attacking player is 5 minutes by default. The cooldown duration can be changed with the `notificationCooldown.cooldown` config option.
 
 **Note: Trackers with `logToFile` enabled will always be written to the log file regardless of notification cooldown settings.**
 
 ```json
 "notificationCooldown": {
   "enabled": true,
-  "cooldownSeconds": 300
+  "cooldown": 300
 }
 ```
 
