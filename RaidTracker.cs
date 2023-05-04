@@ -12,7 +12,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Raid Tracker", "Clearshot", "2.1.0")]
+    [Info("Raid Tracker", "Clearshot", "2.1.1")]
     [Description("Track raids by explosives, weapons, and ammo with detailed on-screen visuals")]
     class RaidTracker : CovalencePlugin
     {
@@ -365,7 +365,7 @@ namespace Oxide.Plugins
                 raidEventFireball.Notify(entity);
 
                 PrintDebug($"OnEntityDeath ({initiator.ShortPrefabName}) - WeaponPrefab: {info?.WeaponPrefab?.ShortPrefabName ?? "NULL"}, ProjectilePrefab: {info?.ProjectilePrefab?.name ?? "NULL"}");
-                PrintDebug($"{initiator.ShortPrefabName} ({initiator.creatorEntity}) BURNT {GetDecayEntityShortname(entity)}[{entity?.net?.ID ?? 0}]");
+                PrintDebug($"{initiator.ShortPrefabName} ({initiator.creatorEntity}) BURNT {GetDecayEntityShortname(entity)}[{entity?.net?.ID.Value ?? 0}]");
                 return;
             }
 
@@ -396,7 +396,7 @@ namespace Oxide.Plugins
                 raidEventFire.Notify(entity);
 
                 PrintDebug($"OnEntityDeath ({fireWeapon}) - WeaponPrefab: {info?.WeaponPrefab?.ShortPrefabName ?? "NULL"}, ProjectilePrefab: {info?.ProjectilePrefab?.name ?? "NULL"}");
-                PrintDebug($"{fireWeapon} BURNT {GetDecayEntityShortname(entity)}[{entity?.net?.ID ?? 0}]");
+                PrintDebug($"{fireWeapon} BURNT {GetDecayEntityShortname(entity)}[{entity?.net?.ID.Value ?? 0}]");
                 return;
             }
 
@@ -470,7 +470,7 @@ namespace Oxide.Plugins
             _raidEventLog.Add(raidEvent);
             raidEvent.Notify(entity);
 
-            PrintDebug($"{weapon} DESTROYED {GetDecayEntityShortname(entity)}[{entity?.net?.ID ?? 0}]");
+            PrintDebug($"{weapon} DESTROYED {GetDecayEntityShortname(entity)}[{entity?.net?.ID.Value ?? 0}]");
         }
 
         private void OnServerSave()
@@ -673,7 +673,7 @@ namespace Oxide.Plugins
 
                 var groupedRaidsNearMe = FindRaidEventsInSphere(pos, radius)
                     .Where(x => x.victimSteamID == pl.userID || (pl.Team != null && pl.Team.members.Contains(x.victimSteamID)) || FindWeaponConfig(x.GetTrackerCategory(), x.GetPrimaryWeaponShortname()).alwaysLog)
-                    .Where(x => DateTime.Now.Subtract(x.timestamp).Minutes > _config.playerViewExplosionsCommand.ignoreRaidEventsLessThanMinutes)
+                    .Where(x => DateTime.Now.Subtract(x.timestamp).TotalMinutes > _config.playerViewExplosionsCommand.ignoreRaidEventsLessThanMinutes)
                     .GroupBy(x => new RaidFilter { filter = $"{x.attackerSteamID.GetHashCode()}", filterType = "victim" });
 
                 DrawRaidEvents(pl, groupedRaidsNearMe, "victim", pl.UserIDString, radius, _config.playerViewExplosionsCommand.drawAttackerName);
@@ -2024,7 +2024,7 @@ namespace Oxide.Plugins
                         raidEvent.hitEntity = $"EVENT.ATTACHED {entityShortname}";
                         raidEvent.victimSteamID = parentEntity.OwnerID;
 
-                       _instance.PrintDebug($"{explosiveEntity.ShortPrefabName} ATTACHED TO PARENT {entityShortname}[{parentEntity?.net?.ID ?? 0}]");
+                       _instance.PrintDebug($"{explosiveEntity.ShortPrefabName} ATTACHED TO PARENT {entityShortname}[{parentEntity?.net?.ID.Value ?? 0}]");
                     }
                 }
                 else
@@ -2096,7 +2096,7 @@ namespace Oxide.Plugins
                                 raidEvent.hitEntity = $"EVENT.HIT {entityShortname}";
                                 raidEvent.victimSteamID = hitEntity.OwnerID;
 
-                                _instance.PrintDebug($"{explosiveEntity.ShortPrefabName} COLLIDED WITH {entityShortname}[{hitEntity?.net?.ID ?? 0}]");
+                                _instance.PrintDebug($"{explosiveEntity.ShortPrefabName} COLLIDED WITH {entityShortname}[{hitEntity?.net?.ID.Value ?? 0}]");
                             }
                         }
                     }
@@ -2128,7 +2128,7 @@ namespace Oxide.Plugins
                 }
             }
         }
-    }
 
-    #endregion
+        #endregion
+    }
 }
