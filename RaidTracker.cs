@@ -12,7 +12,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Raid Tracker", "Clearshot", "2.1.1")]
+    [Info("Raid Tracker", "Clearshot", "2.1.2")]
     [Description("Track raids by explosives, weapons, and ammo with detailed on-screen visuals")]
     class RaidTracker : CovalencePlugin
     {
