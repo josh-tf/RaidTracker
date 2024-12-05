@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Oxide.Core;
 using Oxide.Core.Libraries.Covalence;
@@ -12,7 +12,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Raid Tracker", "Clearshot", "2.1.1")]
+    [Info("Raid Tracker", "Clearshot", "2.1.2")]
     [Description("Track raids by explosives, weapons, and ammo with detailed on-screen visuals")]
     class RaidTracker : CovalencePlugin
     {
@@ -562,7 +562,9 @@ namespace Oxide.Plugins
                     }
 
                     var playerPos = pl.transform.position;
-                    var gridPos = PhoneController.PositionToGridCoord(playerPos);
+					Vector2i gridVector = MapHelper.PositionToGrid(playerPos);
+					string gridPos = $"{gridVector.x}, {gridVector.y}"; // Converting Vector2i to string
+					
                     var filename = $"{Name}\\WipedRaidEvents\\{string.Format("{0:yyyy-MM-dd}", DateTime.Now)}\\{pl.userID}\\{gridPos}_{string.Format("{0:h-mm-tt}", DateTime.Now)}";
                     LogToFile("wiped_raid_events", $"{pl.displayName}[{pl.userID}] wiped {raidEventsToWipe.Count} raid events in {gridPos} ({FormatPosition(playerPos)})", this);
                     Interface.Oxide.DataFileSystem.WriteObject(filename, raidEventsToWipe);
@@ -1582,7 +1584,9 @@ namespace Oxide.Plugins
 
                 _busy = timeSinceStartup + _timeout;
 
-                string gridPos = PhoneController.PositionToGridCoord(raidEvent.endPos);
+				Vector2i gridVector = MapHelper.PositionToGrid(raidEvent.endPos);
+				string gridPos = $"{gridVector.x}, {gridVector.y}";
+				
                 string entityShortname = raidEvent.GetHitEntityShortname();
                 string entityItemShortname = _instance.GetItemFromPrefabShortname(entityShortname);
                 string weaponShortname = raidEvent.GetPrimaryWeaponShortname();
@@ -1804,19 +1808,23 @@ namespace Oxide.Plugins
             public string GetMessage() 
             {
                 IPlayer victim = _instance.covalence.Players.FindPlayerById(victimSteamID.ToString());
+				Vector2i gridVector = MapHelper.PositionToGrid(endPos);
+				string gridPos = $"{gridVector.x}, {gridVector.y}";
+				string teleportPos = $"{endPos.x}, {endPos.y}, {endPos.z}";
+				
                 return _instance.StringReplaceKeys(
                     _instance.lang.GetMessage("RaidEvent.Message", _instance),
-                    new Dictionary<string, string> {
-                        { "raidEventIndex", GetIndex().ToString() },
-                        { "attackerName", attackerName },
-                        { "attackerSteamID", attackerSteamID.ToString() },
-                        { "victimName", victim?.Name ?? "Unknown" },
-                        { "victimSteamID", victimSteamID.ToString() },
-                        { "weaponName", GetWeaponName() },
-                        { "hitEntity", hitEntity.Replace(GetEventType(), GetPrettyEventType()) },
-                        { "gridPos", PhoneController.PositionToGridCoord(endPos) },
-                        { "teleportPos", _instance.FormatPosition(endPos) }
-                    });
+					new Dictionary<string, string> {
+						{ "raidEventIndex", GetIndex().ToString() },
+						{ "attackerName", attackerName },
+						{ "attackerSteamID", attackerSteamID.ToString() },
+						{ "victimName", victim?.Name ?? "Unknown" },
+						{ "victimSteamID", victimSteamID.ToString() },
+						{ "weaponName", GetWeaponName() },
+						{ "hitEntity", hitEntity.Replace(GetEventType(), GetPrettyEventType()) },
+						{ "gridPos", gridPos },
+						{ "teleportPos", teleportPos }
+					});
             }
 
             public string GetPrettyMessage(BasePlayer pl)
@@ -1826,22 +1834,27 @@ namespace Oxide.Plugins
                 string entityShortname = GetHitEntityShortname();
                 string entityItemShortname = _instance.GetItemFromPrefabShortname(entityShortname);
                 string entityItemName = _instance.GetPrettyItemName(entityItemShortname);
+
+				Vector2i gridVector = MapHelper.PositionToGrid(endPos);
+				string gridPos = $"{gridVector.x}, {gridVector.y}";
+				string teleportPos = $"{endPos.x}, {endPos.y}, {endPos.z}";
+
                 return _instance.StringReplaceKeys(
                     _instance.lang.GetMessage("RaidEvent.PrettyMessage", _instance, pl?.UserIDString),
-                    new Dictionary<string, string> {
-                        { "raidEventIndex", GetIndex().ToString() },
-                        { "attackerName", attackerName },
-                        { "attackerSteamID", attackerSteamID.ToString() },
-                        { "victimName", victim?.Name ?? "Unknown" },
-                        { "victimSteamID", victimSteamID.ToString() },
-                        { "weaponName", GetWeaponName() },
-                        { "weaponColor", weaponCfg.hexColor },
-                        { "raidEventType", GetPrettyEventType() },
-                        { "entityItemName", entityItemName },
-                        { "entityShortname", entityShortname },
-                        { "gridPos", PhoneController.PositionToGridCoord(endPos) },
-                        { "teleportPos", _instance.FormatPosition(endPos) }
-                    });
+					new Dictionary<string, string> {
+						{ "raidEventIndex", GetIndex().ToString() },
+						{ "attackerName", attackerName },
+						{ "attackerSteamID", attackerSteamID.ToString() },
+						{ "victimName", victim?.Name ?? "Unknown" },
+						{ "victimSteamID", victimSteamID.ToString() },
+						{ "weaponName", GetWeaponName() },
+						{ "weaponColor", weaponCfg.hexColor },
+						{ "raidEventType", GetPrettyEventType() },
+						{ "entityItemName", entityItemName },
+						{ "entityShortname", entityShortname },
+						{ "gridPos", gridPos },
+						{ "teleportPos", teleportPos }
+					});
             }
 
             public void Notify(BaseEntity entity, string damagedEntityPrefab = null)
