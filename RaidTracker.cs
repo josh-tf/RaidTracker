@@ -12,7 +12,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Raid Tracker", "Clearshot", "2.1.2")]
+    [Info("Raid Tracker", "Clearshot", "2.1.1")]
     [Description("Track raids by explosives, weapons, and ammo with detailed on-screen visuals")]
     class RaidTracker : CovalencePlugin
     {
@@ -562,9 +562,9 @@ namespace Oxide.Plugins
                     }
 
                     var playerPos = pl.transform.position;
-					Vector2i gridVector = MapHelper.PositionToGrid(playerPos);
-					string gridPos = $"{gridVector.x}, {gridVector.y}"; // Converting Vector2i to string
-					
+		    Vector2i gridVector = MapHelper.PositionToGrid(playerPos);
+		    string gridPos = $"{gridVector.x}, {gridVector.y}"; // Converting Vector2i to string
+
                     var filename = $"{Name}\\WipedRaidEvents\\{string.Format("{0:yyyy-MM-dd}", DateTime.Now)}\\{pl.userID}\\{gridPos}_{string.Format("{0:h-mm-tt}", DateTime.Now)}";
                     LogToFile("wiped_raid_events", $"{pl.displayName}[{pl.userID}] wiped {raidEventsToWipe.Count} raid events in {gridPos} ({FormatPosition(playerPos)})", this);
                     Interface.Oxide.DataFileSystem.WriteObject(filename, raidEventsToWipe);
@@ -878,7 +878,7 @@ namespace Oxide.Plugins
             PrintDebug($"prefabToItem - {prefabSource}: {prefabShortname} -> {itemShortname}");
         }
 
-        private string GetItemFromPrefabShortname(string prefabShortname) => 
+        private string GetItemFromPrefabShortname(string prefabShortname) =>
             _prefabToItem.ContainsKey(prefabShortname) ? _prefabToItem[prefabShortname] : prefabShortname;
 
         private string GetPrefabShortname(string prefab) =>
@@ -945,7 +945,7 @@ namespace Oxide.Plugins
                 PluginConfig.WeaponConfig globalWeaponCfg = null;
                 if (_config.trackers.ContainsKey("_global") && _config.trackers["_global"].ContainsKey("*"))
                     globalWeaponCfg = _config.trackers["_global"]["*"];
-                    
+
                 if ((globalWeaponCfg == null || !globalWeaponCfg.enabled) && _config.trackers[category].ContainsKey("*"))
                     globalWeaponCfg = _config.trackers[category]["*"];
 
@@ -1584,9 +1584,9 @@ namespace Oxide.Plugins
 
                 _busy = timeSinceStartup + _timeout;
 
-				Vector2i gridVector = MapHelper.PositionToGrid(raidEvent.endPos);
-				string gridPos = $"{gridVector.x}, {gridVector.y}";
-				
+		Vector2i gridVector = MapHelper.PositionToGrid(raidEvent.endPos);
+		string gridPos = $"{gridVector.x}, {gridVector.y}";
+
                 string entityShortname = raidEvent.GetHitEntityShortname();
                 string entityItemShortname = _instance.GetItemFromPrefabShortname(entityShortname);
                 string weaponShortname = raidEvent.GetPrimaryWeaponShortname();
@@ -1805,13 +1805,13 @@ namespace Oxide.Plugins
                 return hitEntity.Substring(hitEntity.LastIndexOf(' ') + 1);
             }
 
-            public string GetMessage() 
+            public string GetMessage()
             {
                 IPlayer victim = _instance.covalence.Players.FindPlayerById(victimSteamID.ToString());
-				Vector2i gridVector = MapHelper.PositionToGrid(endPos);
-				string gridPos = $"{gridVector.x}, {gridVector.y}";
-				string teleportPos = $"{endPos.x}, {endPos.y}, {endPos.z}";
-				
+		Vector2i gridVector = MapHelper.PositionToGrid(endPos);
+		string gridPos = $"{gridVector.x}, {gridVector.y}";
+		string teleportPos = $"{endPos.x}, {endPos.y}, {endPos.z}";
+
                 return _instance.StringReplaceKeys(
                     _instance.lang.GetMessage("RaidEvent.Message", _instance),
 					new Dictionary<string, string> {
@@ -1835,9 +1835,9 @@ namespace Oxide.Plugins
                 string entityItemShortname = _instance.GetItemFromPrefabShortname(entityShortname);
                 string entityItemName = _instance.GetPrettyItemName(entityItemShortname);
 
-				Vector2i gridVector = MapHelper.PositionToGrid(endPos);
-				string gridPos = $"{gridVector.x}, {gridVector.y}";
-				string teleportPos = $"{endPos.x}, {endPos.y}, {endPos.z}";
+		Vector2i gridVector = MapHelper.PositionToGrid(endPos);
+		string gridPos = $"{gridVector.x}, {gridVector.y}";
+		string teleportPos = $"{endPos.x}, {endPos.y}, {endPos.z}";
 
                 return _instance.StringReplaceKeys(
                     _instance.lang.GetMessage("RaidEvent.PrettyMessage", _instance, pl?.UserIDString),
@@ -1871,13 +1871,13 @@ namespace Oxide.Plugins
 
                     _instance._notificationCooldown[attackerSteamID] = Time.realtimeSinceStartup + _instance._config.notificationCooldown.cooldown;
                 }
-                
+
                 if (weaponCfg.notifyConsole)
                     _instance.Puts(GetMessage());
 
                 if (weaponCfg.notifyAdmin || _instance._dev)
                     NotifyAdmin();
-                
+
                 if (weaponCfg.notifyDiscord || _instance._dev)
                 {
                     if (string.IsNullOrEmpty(damagedEntityPrefab) && entity != null)
@@ -2057,14 +2057,14 @@ namespace Oxide.Plugins
                 var tick = DateTime.Now;
 
                 // not parented to an entity, check for collisions
-                if (string.IsNullOrEmpty(raidEvent.hitEntity)) 
+                if (string.IsNullOrEmpty(raidEvent.hitEntity))
                 {
                     Ray ray = new Ray(position, explosiveEntity.transform.forward);
                     float radius = (explosiveEntity as TimedExplosive)?.explosionRadius ?? 2f;
                     float maxDistance = 1f;
                     List<RaycastHit> hits = Facepunch.Pool.GetList<RaycastHit>();
                     GamePhysics.TraceAllUnordered(ray, radius, hits, maxDistance, _instance._collisionLayerMask, QueryTriggerInteraction.Ignore);
-                    
+
                     if (hits.Count > 0)
                     {
                         var sortedHits = hits.Where(x => {
